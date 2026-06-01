@@ -1,0 +1,4 @@
+train_dataset,liar,welfake,covid
+liar,0.6204,0.5772,0.6164
+welfake,0.5012,0.972,0.414
+covid,0.4871,0.5168,0.929

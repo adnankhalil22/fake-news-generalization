@@ -167,7 +167,7 @@ def error_analysis(
 
     metrics = compute_metrics(test_df["label"], test_df["pred"])
     print(f"\n{'='*60}")
-    print(f"Error Analysis: {model_type}  [{train_dataset} → {test_dataset}]")
+    print(f"Error Analysis: {model_type}  [{train_dataset} -> {test_dataset}]")
     print(f"{'='*60}")
     print(f"  accuracy : {metrics['accuracy']:.4f}")
     print(f"  macro-F1 : {metrics['macro_f1']:.4f}")
@@ -214,7 +214,7 @@ def _plot_error_distributions(
     )
     axes[2].set_title("Confusion matrix")
 
-    title = f"{model_type}  [{train_dataset} → {test_dataset}]"
+    title = f"{model_type}  [{train_dataset} -> {test_dataset}]"
     plt.suptitle(title, y=1.02)
     plt.tight_layout()
 
