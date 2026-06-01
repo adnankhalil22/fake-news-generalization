@@ -205,9 +205,55 @@ def mask_text(text: str, use_spacy: bool = True) -> str:
     return text
 
 
-def apply_masking(df: pd.DataFrame, use_spacy: bool = True) -> pd.DataFrame:
+def apply_masking(df: pd.DataFrame, use_spacy: bool = True, batch_size: int = 256) -> pd.DataFrame:
+    """
+    Apply regex + NER masking to a full DataFrame.
+
+    Regex masking runs first (vectorised).  NER runs via nlp.pipe() in batch,
+    which is ~10x faster than calling nlp() per text.
+    """
+    texts = df["text"].tolist()
+
+    # Regex masking — fast, no NLP model needed
+    def _regex_mask(t: str) -> str:
+        t = _URL_RE.sub("[URL]", t)
+        t = _DATE_RE.sub("[DATE]", t)
+        t = _TWITTER_RE.sub(
+            lambda m: "[USER]" if m.group().startswith("@") else "[HASHTAG]", t
+        )
+        return t
+
+    masked = [_regex_mask(t) for t in texts]
+
+    # NER masking in batch — spaCy.pipe() is far faster than one call per text.
+    # NER_CHAR_LIMIT: only the first N chars of each text are sent to the NER model.
+    # Source-leaking entities (news agency names, by-lines, cities) almost always
+    # appear in the first sentence, so this cap is sufficient while keeping runtime
+    # feasible for long WELFake articles (which can be 8000+ tokens).
+    NER_CHAR_LIMIT = 1500
+    if use_spacy:
+        try:
+            nlp = _get_spacy_nlp()
+            # Disable pipeline components not needed for NER
+            truncated = [t[:NER_CHAR_LIMIT] for t in masked]
+            result = []
+            for text, doc in zip(
+                masked,
+                nlp.pipe(truncated, batch_size=batch_size,
+                         disable=["tok2vec", "tagger", "parser", "lemmatizer"]),
+            ):
+                # Replacements are in the truncated prefix — offsets stay valid
+                for ent in sorted(doc.ents, key=lambda e: e.start_char, reverse=True):
+                    if ent.label_ in _MASK_ENTITY_TYPES:
+                        text = text[: ent.start_char] + f"[{ent.label_}]" + text[ent.end_char:]
+                result.append(text)
+            masked = result
+            logger.debug(f"NER masking done (char_limit={NER_CHAR_LIMIT})")
+        except Exception as exc:
+            logger.debug(f"spaCy NER masking failed ({exc}); using regex-only")
+
     df = df.copy()
-    df["text"] = df["text"].apply(lambda t: mask_text(t, use_spacy=use_spacy))
+    df["text"] = masked
     return df
 
 
