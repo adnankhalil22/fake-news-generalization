@@ -140,19 +140,24 @@ generalisation to COVID (−0.178 F1) and marginally degraded LIAR (−0.037 F1)
 
 Before training and test, replace: URLs→[URL], dates→[DATE], @mentions→[USER],
 #hashtags→[HASHTAG], named entities (PERSON/ORG/GPE/LOC etc. via spaCy
-en_core_web_sm)→[ENTITY_TYPE].
+en_core_web_sm)→[ENTITY_TYPE]. NER applied to first 1500 characters per text
+(source-leaking entities appear in the opening sentence; cap keeps runtime feasible
+for long WELFake articles). Regex masking covers the full text.
+
+Results verified across two independent runs (full NER vs 1500-char cap); all six
+directions are consistent. Values below are from the committed 1500-char cap run.
 
 | Transfer | Baseline F1 | Masked F1 | Delta |
 |---|---|---|---|
-| LIAR → WELFake | 0.535 | 0.594 | **+0.059** |
+| LIAR → WELFake | 0.535 | 0.586 | **+0.051** |
 | LIAR → COVID   | 0.581 | 0.617 | **+0.036** |
-| WELFake → LIAR | 0.498 | 0.474 | −0.024 |
-| WELFake → COVID | 0.314 | 0.303 | −0.011 |
+| WELFake → LIAR | 0.498 | 0.477 | −0.021 |
+| WELFake → COVID | 0.314 | 0.306 | −0.008 |
 | COVID → LIAR   | 0.443 | 0.454 | **+0.011** |
-| COVID → WELFake | 0.484 | 0.399 | −0.085 |
+| COVID → WELFake | 0.484 | 0.445 | −0.039 |
 
 Masking improved 3 of 6 off-diagonal pairs and degraded 3 of 6. The largest improvement
-was LIAR→WELFake (+0.059). The largest degradation was COVID→WELFake (−0.085).
+was LIAR→WELFake (+0.051). The largest degradation was COVID→WELFake (−0.039).
 
 ### Summary across both interventions
 
@@ -163,7 +168,7 @@ was LIAR→WELFake (+0.059). The largest degradation was COVID→WELFake (−0.0
 | →WELFake (from LIAR) | 0.535 | 0.623 | 0.594 | multi-source |
 | →WELFake (from COVID)| 0.484 | 0.403 | 0.399 | baseline |
 | →COVID (from LIAR)   | 0.581 | 0.403 | 0.617 | masked |
-| →COVID (from WELFake)| 0.314 | 0.403 | 0.303 | multi-source |
+| →COVID (from WELFake)| 0.314 | 0.403 | 0.306 | multi-source |
 
 The catastrophic WELFake→COVID cell (baseline 0.314) was not fixed by either
 intervention: masking left it at 0.303 (no change), multi-source improved it to 0.403
