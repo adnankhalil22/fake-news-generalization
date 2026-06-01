@@ -34,47 +34,135 @@ MAX_SAMPLES = {
 # LIAR
 # ─────────────────────────────────────────────────────────────────────────────
 
+_LIAR_LOCAL_DIR = os.path.join("data", "raw", "liar")
+_LIAR_ZIP_URL   = "https://www.cs.ucsb.edu/~william/data/liar_dataset.zip"
+_LIAR_FILE_MAP  = {"train": "train.tsv", "validation": "valid.tsv", "test": "test.tsv"}
+
+# Label sets for binary collapse (documented in DATASETS.md)
+_LIAR_REAL = {"true", "mostly-true", "half-true"}
+_LIAR_FAKE = {"false", "barely-true", "pants-fire"}
+
+
 def load_liar(split: str, seed: int = 42) -> pd.DataFrame:
     """
-    Load LIAR from HuggingFace (no credentials required).
+    Load LIAR and binarise to real (0) / fake (1).
+
+    Strategy:
+      1. Try HuggingFace (may fail if script-based loading is disabled in newer datasets versions).
+      2. Auto-download the original TSV files from the UCSB release page.
 
     Label binarisation (documented in DATASETS.md):
       real (0): true, mostly-true, half-true
       fake (1): false, barely-true, pants-fire
-
-    Rationale: "half-true" is placed with real because it contains a verifiable
-    factual core; "barely-true" is placed with fake because it is predominantly
-    misleading even if not entirely false.  This follows the most common
-    convention in the binarisation literature (e.g., Wang 2017, Shu 2020).
     """
-    from datasets import load_dataset  # lazy import so module loads without GPU
-
     logger.info(f"Loading LIAR split={split}")
-    ds = load_dataset("liar", split=split)
 
-    label_names = ds.features["label"].names
-    logger.info(f"LIAR label_names (index → name): {list(enumerate(label_names))}")
+    # Use cached TSV if already on disk (avoids re-downloading)
+    tsv_path = os.path.join(_LIAR_LOCAL_DIR, _LIAR_FILE_MAP[split])
+    if os.path.exists(tsv_path):
+        logger.info(f"LIAR: cached TSV found at '{tsv_path}'")
+        return _liar_from_tsv(split)
 
-    REAL = {"true", "mostly-true", "half-true"}
-    FAKE = {"false", "barely-true", "pants-fire"}
+    # Try HuggingFace first
+    df = _liar_from_hf(split)
+    if df is not None:
+        return df
 
+    # Fall back to direct download from UCSB
+    logger.info("LIAR: HuggingFace unavailable — downloading TSV files from UCSB")
+    _auto_download_liar()
+    return _liar_from_tsv(split)
+
+
+def _liar_from_hf(split: str) -> Optional[pd.DataFrame]:
+    """Try HuggingFace; return None (don't raise) if it fails for any reason."""
+    try:
+        from datasets import load_dataset
+        # Newer datasets library disabled script-based datasets; try trust_remote_code first.
+        try:
+            ds = load_dataset("liar", split=split, trust_remote_code=True)
+        except TypeError:
+            ds = load_dataset("liar", split=split)
+
+        label_names = ds.features["label"].names
+        logger.info(f"LIAR/HF label_names: {list(enumerate(label_names))}")
+
+        rows, n_dropped = [], 0
+        for item in ds:
+            name = label_names[item["label"]]
+            if name not in _LIAR_REAL and name not in _LIAR_FAKE:
+                n_dropped += 1
+                continue
+            rows.append({"text": item["statement"].strip(),
+                          "label": 0 if name in _LIAR_REAL else 1})
+
+        if n_dropped:
+            logger.warning(f"LIAR/HF {split}: dropped {n_dropped} ambiguous labels")
+
+        df = _clean(pd.DataFrame(rows))
+        _log_counts("liar/hf", split, df)
+        return df
+
+    except Exception as exc:
+        logger.debug(f"LIAR HuggingFace load failed ({exc}); will try direct download")
+        return None
+
+
+def _liar_from_tsv(split: str) -> pd.DataFrame:
+    """Parse a locally cached LIAR TSV file."""
+    tsv_path = os.path.join(_LIAR_LOCAL_DIR, _LIAR_FILE_MAP[split])
+    # quoting=3 = QUOTE_NONE — avoids mis-parsing quotes inside statements
+    raw = pd.read_csv(tsv_path, sep="\t", header=None, dtype=str, quoting=3)
+    # TSV columns: 0=id, 1=label_string, 2=statement, 3+=metadata (unused)
     rows, n_dropped = [], 0
-    for item in ds:
-        name = label_names[item["label"]]
-        if name not in REAL and name not in FAKE:
+    for _, row in raw.iterrows():
+        label_str = str(row.iloc[1]).strip().lower()
+        if label_str not in _LIAR_REAL and label_str not in _LIAR_FAKE:
             n_dropped += 1
             continue
-        rows.append({
-            "text":  item["statement"].strip(),
-            "label": 0 if name in REAL else 1,
-        })
+        rows.append({"text":  str(row.iloc[2]).strip(),
+                     "label": 0 if label_str in _LIAR_REAL else 1})
 
     if n_dropped:
-        logger.warning(f"LIAR {split}: dropped {n_dropped} examples with unrecognised labels")
+        logger.warning(f"LIAR/TSV {split}: dropped {n_dropped} ambiguous labels")
 
     df = _clean(pd.DataFrame(rows))
-    _log_counts("liar", split, df)
+    _log_counts("liar/tsv", split, df)
     return df
+
+
+def _auto_download_liar() -> None:
+    """Download the LIAR dataset zip from UCSB and extract the three TSV files."""
+    import io
+    import urllib.request
+    import zipfile
+
+    os.makedirs(_LIAR_LOCAL_DIR, exist_ok=True)
+    logger.info(f"LIAR: downloading zip from {_LIAR_ZIP_URL}")
+
+    try:
+        with urllib.request.urlopen(_LIAR_ZIP_URL, timeout=60) as resp:
+            zip_data = resp.read()
+    except Exception as exc:
+        raise RuntimeError(
+            f"LIAR auto-download failed: {exc}\n"
+            "Manual fix:\n"
+            "  1. Download https://www.cs.ucsb.edu/~william/data/liar_dataset.zip\n"
+            f"  2. Extract train.tsv, valid.tsv, test.tsv into  {_LIAR_LOCAL_DIR}/"
+        ) from exc
+
+    with zipfile.ZipFile(io.BytesIO(zip_data)) as zf:
+        for fname in ["train.tsv", "valid.tsv", "test.tsv"]:
+            matches = [n for n in zf.namelist() if n.endswith(fname)]
+            if not matches:
+                raise RuntimeError(
+                    f"'{fname}' not found in LIAR zip. Zip contents: {zf.namelist()}"
+                )
+            content = zf.read(matches[0])
+            dest = os.path.join(_LIAR_LOCAL_DIR, fname)
+            with open(dest, "wb") as out:
+                out.write(content)
+            logger.info(f"LIAR: extracted '{fname}' → '{dest}'")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -184,95 +272,118 @@ def _manual_hf_split(ds, target_split: str, seed: int):
 # COVID (Constraint 2021)
 # ─────────────────────────────────────────────────────────────────────────────
 
-_COVID_HF_CANDIDATES = [
-    # Try the most likely identifiers; the Constraint 2021 dataset
-    # may be hosted under different names by different contributors.
-    ("Constraint_2021_Fake_News", None),
-    ("Nv7/covid_fake_news",       None),
-    ("covid_fake_news",           None),
-]
+# Files in the diptamath/covid_fake_news GitHub repo (data/ subfolder).
+# Constraint_Test.csv has NO label column; use english_test_with_labels.csv instead.
+_COVID_GITHUB_FILES = {
+    "train":      "Constraint_Train.csv",
+    "validation": "Constraint_Val.csv",
+    "test":       "english_test_with_labels.csv",
+}
+_COVID_LOCAL_DIR = os.path.join("data", "raw", "covid")
+
 
 def load_covid(split: str, seed: int = 42, csv_path: Optional[str] = None) -> pd.DataFrame:
     """
     Load the Constraint 2021 COVID-19 Fake News dataset.
 
-    Tries several HuggingFace identifiers; if all fail, raises a
-    RuntimeError with exact manual-download instructions.
+    Strategy (in order):
+      1. If csv_path is given and exists, load from there.
+      2. If cached files already exist in data/raw/covid/, load from there.
+      3. Auto-download the three CSVs from GitHub raw content (no credentials).
+      4. If the download fails, raise with exact manual-download instructions.
 
     Label convention: 'real' → 0,  'fake' → 1.
+    Columns in source files: id, tweet, label
     """
+    # Supplied path override
     if csv_path and os.path.exists(csv_path):
-        logger.info("COVID: loading from local CSV")
-        return _covid_from_csv(csv_path, split, seed)
+        logger.info(f"COVID: loading from supplied path '{csv_path}'")
+        return _covid_from_dir_or_csv(csv_path, split, seed)
 
-    from datasets import load_dataset
+    # Use cached files if present
+    local_path = os.path.join(_COVID_LOCAL_DIR, _COVID_GITHUB_FILES[split])
+    if os.path.exists(local_path):
+        logger.info(f"COVID: loading cached file '{local_path}'")
+        return _covid_from_dir_or_csv(_COVID_LOCAL_DIR, split, seed)
 
-    for dataset_id, config in _COVID_HF_CANDIDATES:
-        try:
-            logger.info(f"COVID: trying HuggingFace '{dataset_id}'")
-            kwargs = dict(split=split)
-            if config:
-                kwargs["name"] = config
-            ds = load_dataset(dataset_id, **kwargs)
-            df = _normalize_covid_hf(ds)
-            _log_counts(f"covid/{dataset_id}", split, df)
-            return df
-        except Exception as exc:
-            logger.debug(f"  {dataset_id} failed: {exc}")
-
-    raise RuntimeError(
-        "Could not load the Constraint 2021 COVID-19 dataset from HuggingFace.\n"
-        "ACTION REQUIRED — choose one of:\n"
-        "  (a) Download from the shared task GitHub:\n"
-        "      https://github.com/diptamath/covid_fake_news\n"
-        "      Place Constraint_Train.xlsx / Val.xlsx / Test.xlsx in data/raw/covid/\n"
-        "      Then call: load_covid(split, csv_path='data/raw/covid/')\n"
-        "  (b) Download from the Kaggle mirror:\n"
-        "      https://www.kaggle.com/datasets/arashnic/covid19-fake-news\n"
-        "      Place the CSV in data/raw/covid/ and pass csv_path to load_covid()."
-    )
+    # Auto-download from GitHub
+    logger.info("COVID: cached files not found — downloading from GitHub")
+    _auto_download_covid()
+    return _covid_from_dir_or_csv(_COVID_LOCAL_DIR, split, seed)
 
 
-def _normalize_covid_hf(ds) -> pd.DataFrame:
-    rows = []
-    for item in ds:
-        text = (item.get("tweet") or item.get("text") or item.get("statement") or "").strip()
-        raw  = item.get("label", "")
-        if isinstance(raw, str):
-            binary = 1 if raw.strip().lower() == "fake" else 0
-        else:
-            binary = int(raw)
-        if text:
-            rows.append({"text": text, "label": binary})
-    return _clean(pd.DataFrame(rows))
-
-
-def _covid_from_csv(path: str, split: str, seed: int) -> pd.DataFrame:
+def _auto_download_covid() -> None:
     """
-    Load COVID data from local files.
-    Accepts either a directory (containing train/val/test CSV/XLSX)
-    or a single CSV path.
-    """
-    from sklearn.model_selection import train_test_split
+    Download the three Constraint 2021 CSV files from the diptamath/covid_fake_news
+    GitHub repository and cache them in data/raw/covid/.
 
-    if os.path.isdir(path):
-        split_map = {
-            "train":      ["Constraint_Train.csv", "Constraint_Train.xlsx", "train.csv"],
-            "validation": ["Constraint_Val.csv",   "Constraint_Val.xlsx",   "val.csv"],
-            "test":       ["Constraint_Test.csv",  "Constraint_Test.xlsx",  "test.csv"],
-        }
-        for fname in split_map[split]:
-            fpath = os.path.join(path, fname)
-            if os.path.exists(fpath):
-                raw = (pd.read_excel(fpath) if fpath.endswith(".xlsx") else pd.read_csv(fpath))
+    Tries the 'main' branch first, then 'master'.
+    """
+    import urllib.request
+
+    os.makedirs(_COVID_LOCAL_DIR, exist_ok=True)
+
+    base_urls = [
+        "https://raw.githubusercontent.com/diptamath/covid_fake_news/main/data/",
+        "https://raw.githubusercontent.com/diptamath/covid_fake_news/master/data/",
+    ]
+
+    for fname in _COVID_GITHUB_FILES.values():
+        dest = os.path.join(_COVID_LOCAL_DIR, fname)
+        if os.path.exists(dest):
+            logger.info(f"COVID: '{fname}' already cached, skipping download")
+            continue
+
+        downloaded = False
+        for base in base_urls:
+            url = base + fname
+            try:
+                logger.info(f"COVID: downloading '{fname}' from {url}")
+                urllib.request.urlretrieve(url, dest)
+                downloaded = True
+                logger.info(f"COVID: saved to '{dest}'")
                 break
-        else:
-            raise FileNotFoundError(f"No matching COVID file for split='{split}' in {path}")
+            except Exception as exc:
+                logger.debug(f"  {url} failed: {exc}")
+
+        if not downloaded:
+            # Clean up any partial file
+            if os.path.exists(dest):
+                os.remove(dest)
+            raise RuntimeError(
+                f"Auto-download of '{fname}' failed from all GitHub URLs.\n"
+                "Manual fallback:\n"
+                "  1. Go to https://github.com/diptamath/covid_fake_news/tree/main/data\n"
+                "  2. Download Constraint_Train.csv, Constraint_Val.csv, "
+                "and english_test_with_labels.csv\n"
+                f"  3. Place them in  {_COVID_LOCAL_DIR}\\"
+            )
+
+
+def _covid_from_dir_or_csv(path: str, split: str, seed: int) -> pd.DataFrame:
+    """Load a COVID split from a directory of CSVs or a single CSV file."""
+    if os.path.isdir(path):
+        fname = _COVID_GITHUB_FILES[split]
+        fpath = os.path.join(path, fname)
+        if not os.path.exists(fpath):
+            raise FileNotFoundError(
+                f"Expected '{fpath}'. "
+                f"Available: {os.listdir(path)}"
+            )
+        raw = pd.read_csv(fpath)
     else:
+        # Single CSV — apply a manual split
         raw = pd.read_csv(path)
 
-    text_col  = next(c for c in raw.columns if c.lower() in {"tweet", "text", "statement"})
-    label_col = next(c for c in raw.columns if c.lower() == "label")
+    # Normalise columns
+    text_col  = next((c for c in raw.columns if c.lower() in {"tweet", "text", "statement"}), None)
+    label_col = next((c for c in raw.columns if c.lower() == "label"), None)
+    if text_col is None or label_col is None:
+        raise ValueError(
+            f"COVID CSV missing expected columns. Got: {list(raw.columns)}\n"
+            "Expected a 'tweet'/'text' column and a 'label' column."
+        )
+
     raw["text"]  = raw[text_col].astype(str).str.strip()
     raw["label"] = raw[label_col].apply(
         lambda v: 1 if str(v).strip().lower() == "fake" else 0
@@ -280,13 +391,14 @@ def _covid_from_csv(path: str, split: str, seed: int) -> pd.DataFrame:
     df = _clean(raw[["text", "label"]])
 
     if not os.path.isdir(path):
-        # single CSV — manual split
+        # single-file fallback — derive splits
+        from sklearn.model_selection import train_test_split
         tv, test = train_test_split(df, test_size=0.10, random_state=seed, stratify=df["label"])
         train, val = train_test_split(tv, test_size=0.111, random_state=seed, stratify=tv["label"])
         splits = {"train": train, "validation": val, "test": test}
         df = splits[split].reset_index(drop=True)
 
-    _log_counts("covid/csv", split, df)
+    _log_counts("covid", split, df)
     return df
 
 
@@ -315,11 +427,11 @@ def get_dataset(name: str, split: str, seed: int = 42, **kwargs) -> pd.DataFrame
 
     cap = MAX_SAMPLES.get(name)
     if cap and len(df) > cap:
-        df = (
-            df.groupby("label", group_keys=False)
-            .apply(lambda g: g.sample(frac=cap / len(df), random_state=seed))
-            .reset_index(drop=True)
-        )
+        # Stratified subsample — preserves class ratio and is pandas-version safe.
+        # train_test_split(test_size=cap) draws exactly `cap` rows.
+        from sklearn.model_selection import train_test_split as _tts
+        _, df = _tts(df, test_size=cap, random_state=seed, stratify=df["label"])
+        df = df.reset_index(drop=True)
         logger.info(f"Subsampled {name}/{split} to {len(df)} examples (cap={cap})")
 
     return df[["text", "label"]].reset_index(drop=True)
