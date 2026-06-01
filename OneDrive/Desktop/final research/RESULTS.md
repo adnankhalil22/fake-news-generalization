@@ -176,15 +176,56 @@ intervention: masking left it at 0.303 (no change), multi-source improved it to 
 
 ---
 
-## Pending: DistilBERT results
+## Phase 1 (continued) — DistilBERT results
 
-DistilBERT (distilbert-base-uncased, 66M parameters) training requires a GPU and is
-intended to run on Google Colab. Results will be added to this file after those runs
-complete using `notebooks/colab_runner.ipynb`.
+**Environment:** Google Colab T4 GPU, Python 3.12, transformers (latest), seed=42.  
+**Model:** distilbert-base-uncased, fine-tuned; max_length=256, batch=16, epochs=3 (early stopping patience=2).
 
-Expected: similar generalisation gap pattern; potentially larger in-domain scores,
-similar or smaller off-diagonal scores depending on whether BERT's contextual
-representations generalise better than bag-of-words.
+### Model: DistilBERT
+
+#### Macro-F1 matrix (rows = train dataset, cols = test dataset)
+
+|              | **Test: LIAR** | **Test: WELFake** | **Test: COVID** |
+|---|---|---|---|
+| **Train: LIAR**    | **0.6054** (in-domain) | 0.6044 | 0.6410 |
+| **Train: WELFake** | 0.3079 | **0.9892** (in-domain) | 0.3258 |
+| **Train: COVID**   | 0.3111 | 0.3192 | **0.9822** (in-domain) |
+
+#### In-domain validation F1 (from training logs)
+
+| Dataset | Val Macro-F1 | Val Accuracy |
+|---|---|---|
+| LIAR    | 0.613 | 0.618 |
+| WELFake | 0.989 | 0.989 |
+| COVID   | 0.978 | 0.978 |
+
+#### Key observations (factual)
+
+- DistilBERT in-domain scores are higher than LogReg across all three datasets.
+- LIAR→WELFake (0.604) and LIAR→COVID (0.641) are both higher than the LogReg baseline (0.535 and 0.581).
+- LIAR→COVID (0.641) exceeds LIAR in-domain (0.605) — DistilBERT trained on LIAR transfers
+  better to COVID tweets than it performs on LIAR's own test set.
+- WELFake→LIAR (0.308) and COVID→LIAR (0.311) are substantially **worse** than the LogReg
+  baseline (0.498 and 0.443). DistilBERT overfits more severely to the training domain.
+- The two catastrophic cells remain catastrophic: WELFake→COVID (0.326) and
+  COVID→WELFake (0.319) are near-random despite the larger model.
+
+#### Generalisation gap comparison: LogReg vs DistilBERT
+
+Gap = in-domain F1 − best off-diagonal F1 for that training dataset.
+
+| Train dataset | LogReg in-domain | LogReg gap | DistilBERT in-domain | DistilBERT gap |
+|---|---|---|---|---|
+| LIAR    | 0.592 | +0.011 | 0.605 | **−0.036** (transfer > in-domain) |
+| WELFake | 0.972 | +0.474 | 0.989 | **+0.663** |
+| COVID   | 0.929 | +0.445 | 0.982 | **+0.663** |
+
+DistilBERT shows a **larger generalisation gap** than LogReg for WELFake and COVID (+0.663 vs +0.474/+0.445),
+despite higher in-domain accuracy. For LIAR, DistilBERT has no gap (cross-dataset transfer exceeds
+in-domain performance), suggesting LIAR's in-domain signal is weaker than the patterns it captures
+that happen to generalise to COVID tweets.
+
+Heatmap: `results/figures/distilbert_f1_heatmap.png`
 
 ---
 
@@ -202,3 +243,4 @@ representations generalise better than bag-of-words.
 | `results/figures/error_analysis_logreg_welfake_to_covid.png` | Error distributions |
 | `results/figures/error_analysis_logreg_covid_to_liar.png` | Error distributions |
 | `results/figures/error_analysis_logreg_covid_to_welfake.png` | Error distributions |
+| `results/figures/distilbert_f1_heatmap.png` | DistilBERT 3×3 Macro-F1 heatmap |
