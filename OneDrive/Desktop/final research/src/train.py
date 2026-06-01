@@ -134,12 +134,21 @@ def train_distilbert(dataset_name: str, seed: int = 42) -> dict:
         preds = np.argmax(logits, axis=-1)
         return compute_metrics(labels, preds)  # no prefix — Trainer uses key names directly
 
+    # eval_strategy is the current name (transformers >=4.44);
+    # evaluation_strategy is the deprecated alias kept for older versions.
+    import transformers as _tfm
+    _eval_kwarg = (
+        "eval_strategy"
+        if tuple(int(x) for x in _tfm.__version__.split(".")[:2]) >= (4, 44)
+        else "evaluation_strategy"
+    )
+
     training_args = TrainingArguments(
         output_dir=out_dir,
         num_train_epochs=3,
         per_device_train_batch_size=16,
         per_device_eval_batch_size=32,
-        evaluation_strategy="epoch",
+        **{_eval_kwarg: "epoch"},
         save_strategy="epoch",
         load_best_model_at_end=True,
         metric_for_best_model="macro_f1",
@@ -147,7 +156,7 @@ def train_distilbert(dataset_name: str, seed: int = 42) -> dict:
         seed=seed,
         data_seed=seed,
         logging_steps=50,
-        report_to="none",          # disable wandb / tensorboard
+        report_to="none",
         fp16=torch.cuda.is_available(),
     )
 
