@@ -102,7 +102,7 @@ def multi_source_distilbert(held_out: str, seed: int = 42) -> dict:
     def to_hf(df):
         ds = HFDataset.from_pandas(df[["text", "label"]].rename(columns={"label": "labels"}))
         ds = ds.map(tokenize, batched=True, batch_size=256, remove_columns=["text"])
-        ds.set_format("torch", columns=["input_ids", "attention_mask", "labels"])
+        ds.set_format("numpy", columns=["input_ids", "attention_mask", "labels"])
         return ds
 
     out_dir = os.path.join(MODEL_DIR, f"distilbert_multisource_held{held_out}_seed{seed}")
@@ -309,7 +309,7 @@ def masking_distilbert(
     def to_hf(df):
         ds = HFDataset.from_pandas(df[["text", "label"]].rename(columns={"label": "labels"}))
         ds = ds.map(tokenize, batched=True, batch_size=256, remove_columns=["text"])
-        ds.set_format("torch", columns=["input_ids", "attention_mask", "labels"])
+        ds.set_format("numpy", columns=["input_ids", "attention_mask", "labels"])
         return ds
 
     out_dir = os.path.join(

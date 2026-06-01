@@ -116,7 +116,10 @@ def train_distilbert(dataset_name: str, seed: int = 42) -> dict:
             df[["text", "label"]].rename(columns={"label": "labels"})
         )
         ds = ds.map(tokenize, batched=True, batch_size=256, remove_columns=["text"])
-        ds.set_format("torch", columns=["input_ids", "attention_mask", "labels"])
+        # "numpy" avoids a datasets+torchvision bug where set_format("torch")
+        # tries to import torchvision.io.VideoReader (removed in newer builds).
+        # The Trainer converts numpy arrays to tensors automatically.
+        ds.set_format("numpy", columns=["input_ids", "attention_mask", "labels"])
         return ds
 
     train_hf = df_to_hf(train_df)
