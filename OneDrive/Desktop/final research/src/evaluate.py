@@ -44,14 +44,54 @@ def _eval_logreg(train_ds: str, test_ds: str, seed: int) -> dict:
     return compute_metrics(test_df["label"], preds)
 
 
+def _resolve_distilbert_path(model_dir: str) -> str:
+    """
+    The Trainer saves fine-tuned weights to checkpoint subdirs, not the root dir.
+    This function finds the actual weights: root dir first, then best checkpoint
+    from trainer_state.json, then the highest-numbered checkpoint as fallback.
+    """
+    import json as _json
+
+    weight_files = {"model.safetensors", "pytorch_model.bin"}
+    if any(os.path.exists(os.path.join(model_dir, w)) for w in weight_files):
+        return model_dir  # weights already in root — normal case after fix
+
+    # Read best_model_checkpoint from trainer_state.json
+    state_path = os.path.join(model_dir, "trainer_state.json")
+    if os.path.exists(state_path):
+        with open(state_path) as f:
+            state = _json.load(f)
+        best = state.get("best_model_checkpoint", "")
+        if best and os.path.isdir(best):
+            logger.info(f"Loading from best checkpoint: {best}")
+            return best
+
+    # Fall back to highest-numbered checkpoint directory
+    try:
+        ckpts = sorted(
+            [d for d in os.listdir(model_dir) if d.startswith("checkpoint-")],
+            key=lambda x: int(x.split("-")[-1]),
+        )
+        if ckpts:
+            path = os.path.join(model_dir, ckpts[-1])
+            logger.info(f"Loading from latest checkpoint: {path}")
+            return path
+    except Exception:
+        pass
+
+    return model_dir  # last resort
+
+
 def _eval_distilbert(train_ds: str, test_ds: str, seed: int) -> dict:
-    model_dir = os.path.join("models", f"distilbert_{train_ds}_seed{seed}")
-    device    = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model_dir  = os.path.join("models", f"distilbert_{train_ds}_seed{seed}")
+    load_path  = _resolve_distilbert_path(model_dir)
+    device     = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     from transformers import DistilBertForSequenceClassification, DistilBertTokenizerFast
 
+    # Tokenizer lives in the root model_dir; weights may be in a checkpoint subdir
     tokenizer = DistilBertTokenizerFast.from_pretrained(model_dir)
-    model     = DistilBertForSequenceClassification.from_pretrained(model_dir).eval().to(device)
+    model     = DistilBertForSequenceClassification.from_pretrained(load_path).eval().to(device)
 
     test_df   = get_dataset(test_ds, "test", seed=seed)
     encodings = tokenizer(

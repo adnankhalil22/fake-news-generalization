@@ -175,6 +175,9 @@ def train_distilbert(dataset_name: str, seed: int = 42) -> dict:
     )
 
     trainer.train()
+    # Save the best model weights to out_dir root so evaluate.py can load directly.
+    # Without this the Trainer only writes weights to checkpoint subdirectories.
+    trainer.save_model(out_dir)
     eval_result = trainer.evaluate()
     logger.info(f"[distilbert] {dataset_name} val  {eval_result}")
 
