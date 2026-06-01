@@ -53,7 +53,6 @@ def train_logreg(dataset_name: str, seed: int = 42) -> dict:
             max_iter=1000,
             C=1.0,
             solver="lbfgs",
-            multi_class="auto",
             random_state=seed,
         )),
     ])
