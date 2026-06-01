@@ -135,7 +135,9 @@ def train_distilbert(dataset_name: str, seed: int = 42) -> dict:
     def _compute_metrics(eval_pred):
         logits, labels = eval_pred
         preds = np.argmax(logits, axis=-1)
-        return compute_metrics(labels, preds)  # no prefix — Trainer uses key names directly
+        m = compute_metrics(labels, preds)
+        # Trainer requires numeric-only values; exclude confusion_matrix (list)
+        return {k: v for k, v in m.items() if isinstance(v, (int, float))}
 
     # eval_strategy is the current name (transformers >=4.44);
     # evaluation_strategy is the deprecated alias kept for older versions.
